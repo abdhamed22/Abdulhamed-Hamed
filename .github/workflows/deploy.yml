@@ -9,18 +9,17 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: pages-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  SITE_URL: https://cv.u-network-it.com
 
 jobs:
   validate:
     name: Validate HTML & assets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 
@@ -30,7 +29,7 @@ jobs:
       - name: Check local files referenced by the page exist
         run: |
           missing=0
-          for ref in $(grep -oE '(href|src|srcset)="[^"#:]+"' site/index.html | sed -E 's/^[a-z]+="//; s/"$//' | sort -u); do
+          for ref in $(grep -oE '(href|src|srcset)="[^"#:]+"' site/index.html | sed -E 's/^[a-z]+="//; s/"$//; s/\?.*$//' | sort -u); do
             if [ -f "site/$ref" ]; then
               echo "ok   $ref"
             else
@@ -40,26 +39,71 @@ jobs:
           done
           exit $missing
 
+      - name: Lint server setup script
+        run: shellcheck deploy/server-setup.sh
+
   deploy:
-    name: Deploy to GitHub Pages
+    name: Deploy to cv.u-network-it.com
     needs: validate
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
     environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      name: production
+      url: https://cv.u-network-it.com
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/configure-pages@v5
+      - name: Check deploy secrets
+        run: |
+          missing=""
+          for name in SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secrets:$missing. Run deploy/server-setup.sh on the server and add the values it prints (see README)."
+            exit 1
+          fi
 
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
+      - name: Stamp asset versions with the commit
+        run: |
+          version="${GITHUB_SHA::7}"
+          sed -i "s/?v=dev/?v=$version/g" site/index.html
+          echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Host key is pinned under the alias "cv-server" (printed by server-setup.sh).
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Upload site with rsync
+        run: |
+          rsync -rltz --delete --chmod=D755,F644 --itemize-changes \
+            -e "ssh -p $SSH_PORT -i $HOME/.ssh/deploy_key -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o HostKeyAlias=cv-server -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20" \
+            site/ "$SSH_USER@$SSH_HOST:"
+
+      - name: Check the new version is live
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS --max-time 15 "$SITE_URL/" | grep -q "?v=$VERSION"; then
+              echo "Live: $SITE_URL serves version $VERSION"
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "::warning::Upload succeeded, but $SITE_URL did not return version $VERSION from GitHub's network (Cloudflare may challenge GitHub runners). Open the site to check."
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
