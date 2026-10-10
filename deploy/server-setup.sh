@@ -37,6 +37,18 @@ SITE_CONF="/etc/apache2/sites-available/$SITE_NAME.conf"
 SELF_SIGNED_DIR="/etc/ssl/cv-site"
 HOST_KEY_ALIAS="cv-server"   # must match HostKeyAlias in .github/workflows/deploy.yml
 
+PRIVATE_KEY=""
+key_shown=0
+tmp=""
+on_exit() {
+  [ -z "$tmp" ] || rm -rf "$tmp"
+  if [ -n "$PRIVATE_KEY" ] && [ "$key_shown" = "0" ]; then
+    printf '\nThe script stopped early, but a new deploy key was already installed.\n' >&2
+    printf 'Save it as the SSH_PRIVATE_KEY secret:\n\n%s\n\n' "$PRIVATE_KEY" >&2
+  fi
+}
+trap on_exit EXIT
+
 info() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARNING:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -122,14 +134,12 @@ fi
 # ---------------------------------------------------------------- deploy SSH key
 SSH_DIR="$(getent passwd "$DEPLOY_USER" | cut -d: -f6)/.ssh"
 AUTH_KEYS="$SSH_DIR/authorized_keys"
-PRIVATE_KEY=""
 
 if [ -s "$AUTH_KEYS" ] && [ "$ROTATE_KEY" != "1" ]; then
   info "Deploy key already installed (re-run with ROTATE_KEY=1 to issue a new one)"
 else
   info "Generating a new deploy key"
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
   ssh-keygen -q -t ed25519 -N "" -C "github-actions-deploy@$DOMAIN" -f "$tmp/key"
   if [ -n "$RRSYNC" ]; then
     opts="command=\"$RRSYNC -wo $WEB_ROOT\",restrict"
@@ -282,7 +292,16 @@ else
 fi
 
 # ---------------------------------------------------------------- summary
-ssh_port="$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')"
+# 'sshd -T' fails on some systems (e.g. socket-activated ssh without /run/sshd),
+# so fall back to reading the config files directly.
+sshd_settings() {
+  if sshd -T 2>/dev/null; then return 0; fi
+  cat /etc/ssh/sshd_config.d/*.conf /etc/ssh/sshd_config 2>/dev/null \
+    | sed -E 's/#.*//; s/^[[:space:]]+//' \
+    | awk 'NF { $1 = tolower($1); print }'
+}
+sshd_conf="$(sshd_settings || true)"
+ssh_port="$(awk '$1=="port"{print $2; exit}' <<<"$sshd_conf")"
 host_key=""
 for t in ed25519 ecdsa rsa; do
   if [ -r "/etc/ssh/ssh_host_${t}_key.pub" ]; then
@@ -290,9 +309,9 @@ for t in ed25519 ecdsa rsa; do
     break
   fi
 done
-ip_guess="$(hostname -I 2>/dev/null | awk '{print $1}')"
+ip_guess="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
 
-allow="$(sshd -T 2>/dev/null | grep -iE '^(allowusers|allowgroups) ' || true)"
+allow="$(grep -iE '^(allowusers|allowgroups) ' <<<"$sshd_conf" || true)"
 if [ -n "$allow" ] && ! grep -qw "$DEPLOY_USER" <<<"$allow"; then
   warn "sshd limits logins ($(tr '\n' ' ' <<<"$allow")). Add '$DEPLOY_USER' there or deploys will be refused."
 fi
@@ -323,6 +342,7 @@ $PRIVATE_KEY
  This private key is shown once and not stored on the server.
  It can only upload files into $WEB_ROOT.
 EOF
+  key_shown=1
 else
   echo "   SSH_PRIVATE_KEY  (unchanged; use ROTATE_KEY=1 to get a new one)"
 fi
