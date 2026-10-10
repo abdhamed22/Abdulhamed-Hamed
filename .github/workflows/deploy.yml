@@ -96,7 +96,7 @@ jobs:
       - name: Check the new version is live
         run: |
           for attempt in 1 2 3 4 5; do
-            if curl -fsS --max-time 15 "$SITE_URL/" | grep -q "?v=$VERSION"; then
+            if curl -fsS --max-time 15 -o live.html "$SITE_URL/" && grep -qF "?v=$VERSION" live.html; then
               echo "Live: $SITE_URL serves version $VERSION"
               exit 0
             fi
