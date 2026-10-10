@@ -73,10 +73,16 @@ jobs:
             exit 1
           fi
 
-      - name: Stamp asset versions with the commit
+      - name: Stamp asset versions and deploy info with the commit
         run: |
           version="${GITHUB_SHA::7}"
           sed -i "s/?v=dev/?v=$version/g" site/index.html
+          # Footer "Last deploy" line: date + link to the commit.
+          today="$(date -u +%Y-%m-%d)"
+          pretty="$(date -u '+%-d %b %Y')"
+          commit_url="https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
+          sed -i "s|<span id=\"build\">local preview</span>|<span id=\"build\"><time datetime=\"$today\">$pretty</time>, commit <a href=\"$commit_url\">$version</a></span>|" site/index.html
+          grep -q "commit/$GITHUB_SHA" site/index.html || { echo "::error::Deploy stamp was not applied to index.html"; exit 1; }
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Configure SSH

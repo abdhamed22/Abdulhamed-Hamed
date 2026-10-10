@@ -13,7 +13,7 @@ site/                             # the website (this folder is what gets deploy
 ├── index.html                    # all page content lives here
 └── assets/
     ├── css/style.css             # theme colors are variables at the top
-    ├── js/main.js                # theme toggle, mobile menu, terminal animation
+    ├── js/main.js                # light/dark toggle (the only script)
     ├── img/profile.jpg|.webp     # profile photo (720x720)
     ├── img/favicon.svg
     └── Abdulhameed_Hameed_CV.pdf # the "Download CV" file
@@ -109,6 +109,6 @@ python3 -m http.server 8000
 - **Text** (projects, experience, certifications): edit `site/index.html`. Each section is marked with a comment like `<!-- ============ PROJECTS ============ -->`.
 - **CV PDF**: replace `site/assets/Abdulhameed_Hameed_CV.pdf`, keeping the same file name.
 - **Photo**: replace `site/assets/img/profile.jpg` and `profile.webp` with square images.
-- **Colors**: change the `--accent` values at the top of `site/assets/css/style.css`.
+- **Colors**: the tokens at the top of `site/assets/css/style.css`; `--hl` is the yellow highlighter accent.
 
 Every push to `main` redeploys the site automatically.
